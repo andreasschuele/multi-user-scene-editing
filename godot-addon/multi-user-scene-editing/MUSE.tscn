@@ -1,0 +1,237 @@
+[gd_scene load_steps=2 format=2]
+
+[ext_resource path="res://addons/multi-user-scene-editing/MUSE.gd" type="Script" id=1]
+
+[node name="MUSE" type="Panel"]
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+margin_left = -512.0
+margin_top = -600.0
+margin_right = -280.0
+rect_min_size = Vector2( 0, 200 )
+focus_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+script = ExtResource( 1 )
+
+[node name="MarginContainer" type="MarginContainer" parent="."]
+anchor_right = 1.0
+anchor_bottom = 1.0
+margin_left = 5.08112
+margin_top = -2.36035
+margin_right = 2.08112
+margin_bottom = -2.36035
+custom_constants/margin_right = 20
+custom_constants/margin_top = 20
+custom_constants/margin_left = 20
+custom_constants/margin_bottom = 20
+
+[node name="PanelContainer" type="PanelContainer" parent="MarginContainer"]
+margin_left = 20.0
+margin_top = 20.0
+margin_right = 209.0
+margin_bottom = 580.0
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/PanelContainer"]
+margin_left = 7.0
+margin_top = 7.0
+margin_right = 182.0
+margin_bottom = 553.0
+alignment = 1
+
+[node name="Controls" type="Panel" parent="MarginContainer/PanelContainer/HBoxContainer"]
+margin_right = 175.0
+margin_bottom = 546.0
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="ScrollContainer" type="ScrollContainer" parent="MarginContainer/PanelContainer/HBoxContainer/Controls"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+margin_left = 4.0
+margin_top = 7.0
+margin_right = -20.0
+margin_bottom = 1.0
+scroll_horizontal_enabled = false
+
+[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer"]
+margin_right = 159.0
+margin_bottom = 547.0
+
+[node name="VBoxContainer" type="VBoxContainer" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer"]
+margin_right = 159.0
+margin_bottom = 305.0
+size_flags_horizontal = 5
+custom_constants/separation = 5
+
+[node name="HBC-Splitter1" type="HBoxContainer" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer"]
+margin_right = 159.0
+margin_bottom = 5.0
+rect_min_size = Vector2( 0, 5 )
+size_flags_horizontal = 5
+alignment = 1
+
+[node name="LabelTitle" type="Label" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer"]
+margin_top = 10.0
+margin_right = 159.0
+margin_bottom = 24.0
+text = "Multi-User-Scene-Editing"
+align = 1
+
+[node name="HBC-Splitter2" type="HBoxContainer" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer"]
+margin_top = 29.0
+margin_right = 159.0
+margin_bottom = 34.0
+rect_min_size = Vector2( 0, 5 )
+size_flags_horizontal = 5
+alignment = 1
+
+[node name="ServerLabel" type="Label" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer"]
+margin_top = 39.0
+margin_right = 159.0
+margin_bottom = 53.0
+text = "Server:"
+
+[node name="ServerHostLineEdit" type="LineEdit" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer"]
+margin_top = 58.0
+margin_right = 159.0
+margin_bottom = 82.0
+rect_min_size = Vector2( 150, 0 )
+size_flags_horizontal = 5
+text = "ws://127.0.0.1:5000/ws"
+
+[node name="SessionLabel" type="Label" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer"]
+margin_top = 87.0
+margin_right = 159.0
+margin_bottom = 101.0
+text = "Session:"
+
+[node name="SessionLineEdit" type="LineEdit" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer"]
+margin_top = 106.0
+margin_right = 159.0
+margin_bottom = 130.0
+rect_min_size = Vector2( 150, 0 )
+size_flags_horizontal = 5
+text = "MUSE"
+
+[node name="SessionPasswortLabel" type="Label" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer"]
+margin_top = 135.0
+margin_right = 159.0
+margin_bottom = 149.0
+text = "Session Password:"
+
+[node name="SessionPasswortLineEdit" type="LineEdit" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer"]
+margin_top = 154.0
+margin_right = 159.0
+margin_bottom = 178.0
+rect_min_size = Vector2( 150, 0 )
+size_flags_horizontal = 5
+
+[node name="UsernameLabel" type="Label" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer"]
+margin_top = 183.0
+margin_right = 159.0
+margin_bottom = 197.0
+text = "User:"
+
+[node name="UsernameLineEdit" type="LineEdit" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer"]
+margin_top = 202.0
+margin_right = 159.0
+margin_bottom = 226.0
+rect_min_size = Vector2( 150, 0 )
+size_flags_horizontal = 5
+text = "Carl"
+
+[node name="HBoxContainer" type="HBoxContainer" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer"]
+margin_top = 231.0
+margin_right = 159.0
+margin_bottom = 251.0
+
+[node name="Label" type="Label" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer/HBoxContainer"]
+margin_top = 3.0
+margin_right = 71.0
+margin_bottom = 17.0
+text = "User Color:"
+
+[node name="ColorPickerButton" type="ColorPickerButton" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer/HBoxContainer"]
+margin_left = 75.0
+margin_right = 102.0
+margin_bottom = 20.0
+text = "---"
+color = Color( 0.0728063, 0.618854, 0.235407, 1 )
+edit_alpha = false
+
+[node name="HBoxContainer2" type="HBoxContainer" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer"]
+margin_top = 256.0
+margin_right = 159.0
+margin_bottom = 280.0
+
+[node name="Label" type="Label" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer/HBoxContainer2"]
+margin_top = 5.0
+margin_right = 116.0
+margin_bottom = 19.0
+text = "Sync Project Files:"
+
+[node name="FileSyncCheckBox" type="CheckBox" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer/HBoxContainer2"]
+margin_left = 120.0
+margin_right = 144.0
+margin_bottom = 24.0
+
+[node name="ConnectButton" type="Button" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer"]
+margin_top = 285.0
+margin_right = 159.0
+margin_bottom = 305.0
+size_flags_horizontal = 7
+text = "Connect"
+
+[node name="HBC-Splitter3" type="HBoxContainer" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer"]
+margin_top = 309.0
+margin_right = 159.0
+margin_bottom = 319.0
+rect_min_size = Vector2( 0, 10 )
+size_flags_horizontal = 5
+alignment = 1
+
+[node name="VBoxContainer4" type="VBoxContainer" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer"]
+margin_top = 323.0
+margin_right = 159.0
+margin_bottom = 491.0
+
+[node name="Label" type="Label" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer4"]
+margin_right = 159.0
+margin_bottom = 14.0
+text = "Participants:"
+
+[node name="ItemList" type="ItemList" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer4"]
+margin_top = 18.0
+margin_right = 159.0
+margin_bottom = 168.0
+rect_min_size = Vector2( 0, 150 )
+
+[node name="HBC-Splitter4" type="HBoxContainer" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer"]
+margin_top = 495.0
+margin_right = 159.0
+margin_bottom = 505.0
+rect_min_size = Vector2( 0, 10 )
+size_flags_horizontal = 5
+alignment = 1
+
+[node name="VBoxContainer3" type="VBoxContainer" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer"]
+margin_top = 509.0
+margin_right = 159.0
+margin_bottom = 547.0
+
+[node name="Label" type="Label" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer3"]
+margin_right = 159.0
+margin_bottom = 14.0
+text = "Debug:"
+
+[node name="DoSomething" type="Button" parent="MarginContainer/PanelContainer/HBoxContainer/Controls/ScrollContainer/VBoxContainer/VBoxContainer3"]
+margin_top = 18.0
+margin_right = 159.0
+margin_bottom = 38.0
+size_flags_horizontal = 5
+text = "Test"

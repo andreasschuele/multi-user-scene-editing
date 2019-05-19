@@ -1,0 +1,12 @@
+{
+  "WebServer": {
+    "Urls": "http://*:5000",
+    "CrossOriginResourceSharing": true
+  },
+  "Logging": {
+    "LogLevel": {
+      "Default": "Trace"
+    }
+  },
+  "AllowedHosts": "*"
+}

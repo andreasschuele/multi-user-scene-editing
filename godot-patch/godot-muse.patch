@@ -1,0 +1,1551 @@
+From 503d21a72a318500f33f2172ff24c4dd61cd54a9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Andreas=20Sch=C3=BCle?= <email@andreas.schuele.info>
+Date: Sun, 19 May 2019 12:56:41 +0200
+Subject: [PATCH] MUSE modifications
+
+---
+ core/undo_redo.cpp                           |  72 ++++-
+ core/undo_redo.h                             |  18 ++
+ editor/editor_data.cpp                       |  65 ++++
+ editor/editor_data.h                         |  13 +
+ editor/editor_muse.cpp                       | 309 +++++++++++++++++++
+ editor/editor_muse.h                         |  76 +++++
+ editor/editor_node.cpp                       |  20 +-
+ editor/editor_node.h                         |   1 +
+ editor/editor_plugin.cpp                     |   6 +
+ editor/editor_plugin.h                       |   3 +
+ editor/plugins/canvas_item_editor_plugin.cpp |  18 +-
+ editor/plugins/spatial_editor_plugin.cpp     |  29 +-
+ editor/plugins/spatial_editor_plugin.h       |   1 +
+ editor/scene_tree_dock.cpp                   |  15 +-
+ editor/scene_tree_editor.cpp                 |  24 +-
+ editor/scene_tree_editor.h                   |   1 +
+ editor/spatial_editor_gizmos.cpp             | 188 +++++++++++
+ editor/spatial_editor_gizmos.h               |  36 +++
+ modules/websocket/websocket_client.cpp       |   5 +
+ modules/websocket/websocket_client.h         |   2 +
+ scene/2d/canvas_item.cpp                     |  25 +-
+ scene/2d/sprite.cpp                          |  18 +-
+ scene/main/node.cpp                          |  32 ++
+ scene/main/node.h                            |  17 +
+ 24 files changed, 974 insertions(+), 20 deletions(-)
+ create mode 100644 editor/editor_muse.cpp
+ create mode 100644 editor/editor_muse.h
+
+diff --git a/core/undo_redo.cpp b/core/undo_redo.cpp
+index e13164d50..715ea708e 100644
+--- a/core/undo_redo.cpp
++++ b/core/undo_redo.cpp
+@@ -258,6 +258,16 @@ void UndoRedo::commit_action() {
+ 	}
+ }
+ 
++void UndoRedo::_fire_method_callback(Operation &operation, Object *p_base) {
++	for (List<MethodNotifyCallbackItem>::Element *E = method_callbacks.front(); E; E = E->next()) {
++		E->get().method_callback(E->get().method_callbck_ud, p_base, operation.name, VARIANT_ARGS_FROM_ARRAY(operation.args));
++	}
++
++	for (List<MethodNotifyCallbackItemGDScript>::Element *E = method_callbacks_gdscript.front(); E; E = E->next()) {
++		E->get().object->call(E->get().method, p_base, operation.name, operation.args[0], operation.args[1], operation.args[2]);
++	}
++}
++
+ void UndoRedo::_process_operation_list(List<Operation>::Element *E) {
+ 
+ 	for (; E; E = E->next()) {
+@@ -297,8 +307,8 @@ void UndoRedo::_process_operation_list(List<Operation>::Element *E) {
+ 
+ #endif
+ 
+-				if (method_callback) {
+-					method_callback(method_callbck_ud, obj, op.name, VARIANT_ARGS_FROM_ARRAY(op.args));
++				if (method_callbacks.size() != 0) {
++					_fire_method_callback(op, obj);
+ 				}
+ 			} break;
+ 			case Operation::TYPE_PROPERTY: {
+@@ -381,6 +391,13 @@ void UndoRedo::set_method_notify_callback(MethodNotifyCallback p_method_callback
+ 
+ 	method_callback = p_method_callback;
+ 	method_callbck_ud = p_ud;
++
++	//
++
++	MethodNotifyCallbackItem item;
++	item.method_callback = p_method_callback;
++	item.method_callbck_ud = p_ud;
++	method_callbacks.push_back(item);
+ }
+ 
+ void UndoRedo::set_property_notify_callback(PropertyNotifyCallback p_property_callback, void *p_ud) {
+@@ -486,6 +503,47 @@ Variant UndoRedo::_add_undo_method(const Variant **p_args, int p_argcount, Varia
+ 	return Variant();
+ }
+ 
++Variant UndoRedo::_add_callback(const Variant **p_args, int p_argcount, Variant::CallError &r_error) {
++
++	if (p_argcount < 2) {
++		r_error.error = Variant::CallError::CALL_ERROR_TOO_FEW_ARGUMENTS;
++		r_error.argument = 0;
++		return Variant();
++	}
++
++	if (p_args[0]->get_type() != Variant::OBJECT) {
++		r_error.error = Variant::CallError::CALL_ERROR_INVALID_ARGUMENT;
++		r_error.argument = 0;
++		r_error.expected = Variant::OBJECT;
++		return Variant();
++	}
++
++	if (p_args[1]->get_type() != Variant::STRING) {
++		r_error.error = Variant::CallError::CALL_ERROR_INVALID_ARGUMENT;
++		r_error.argument = 1;
++		r_error.expected = Variant::STRING;
++		return Variant();
++	}
++
++	r_error.error = Variant::CallError::CALL_OK;
++
++	Object *object = *p_args[0];
++	String method = *p_args[1];
++
++	MethodNotifyCallbackItemGDScript callback;
++
++	callback.object = object;
++	callback.method = method;
++
++	method_callbacks_gdscript.push_back(callback);
++
++	return Variant();
++}
++
++void UndoRedo::_clear_callbacks() {
++	method_callbacks_gdscript.clear();
++}
++
+ void UndoRedo::_bind_methods() {
+ 
+ 	ClassDB::bind_method(D_METHOD("create_action", "name", "merge_mode"), &UndoRedo::create_action, DEFVAL(MERGE_DISABLE));
+@@ -523,6 +581,16 @@ void UndoRedo::_bind_methods() {
+ 	ClassDB::bind_method(D_METHOD("redo"), &UndoRedo::redo);
+ 	ClassDB::bind_method(D_METHOD("undo"), &UndoRedo::undo);
+ 
++	{
++		MethodInfo mi;
++		mi.name = "add_callback";
++		mi.arguments.push_back(PropertyInfo(Variant::OBJECT, "object"));
++		mi.arguments.push_back(PropertyInfo(Variant::STRING, "method"));
++		ClassDB::bind_vararg_method(METHOD_FLAGS_DEFAULT, "add_callback", &UndoRedo::_add_callback, mi);
++	}
++
++	ClassDB::bind_method(D_METHOD("clear_callback"), &UndoRedo::_clear_callbacks);
++
+ 	BIND_ENUM_CONSTANT(MERGE_DISABLE);
+ 	BIND_ENUM_CONSTANT(MERGE_ENDS);
+ 	BIND_ENUM_CONSTANT(MERGE_ALL);
+diff --git a/core/undo_redo.h b/core/undo_redo.h
+index b626149ce..b038ced63 100644
+--- a/core/undo_redo.h
++++ b/core/undo_redo.h
+@@ -49,6 +49,9 @@ public:
+ 	typedef void (*CommitNotifyCallback)(void *p_ud, const String &p_name);
+ 	Variant _add_do_method(const Variant **p_args, int p_argcount, Variant::CallError &r_error);
+ 	Variant _add_undo_method(const Variant **p_args, int p_argcount, Variant::CallError &r_error);
++ 	Variant _add_callback(const Variant **p_args, int p_argcount, Variant::CallError &r_error);
++
++	void _clear_callbacks();
+ 
+ 	typedef void (*MethodNotifyCallback)(void *p_ud, Object *p_base, const StringName &p_name, VARIANT_ARG_DECLARE);
+ 	typedef void (*PropertyNotifyCallback)(void *p_ud, Object *p_base, const StringName &p_property, const Variant &p_value);
+@@ -76,6 +79,16 @@ private:
+ 		uint64_t last_tick;
+ 	};
+ 
++	struct MethodNotifyCallbackItem {
++		void *method_callbck_ud;
++		MethodNotifyCallback method_callback;
++	};
++
++	struct MethodNotifyCallbackItemGDScript {
++		Object *object;
++		String method;
++	};
++
+ 	Vector<Action> actions;
+ 	int current_action;
+ 	int action_level;
+@@ -94,6 +107,11 @@ private:
+ 	MethodNotifyCallback method_callback;
+ 	PropertyNotifyCallback property_callback;
+ 
++	List<MethodNotifyCallbackItem> method_callbacks;
++	List<MethodNotifyCallbackItemGDScript> method_callbacks_gdscript;
++
++	void _fire_method_callback(Operation &operation, Object *p_base);
++
+ 	int commiting;
+ 
+ protected:
+diff --git a/editor/editor_data.cpp b/editor/editor_data.cpp
+index f61a83101..58ffea8e1 100644
+--- a/editor/editor_data.cpp
++++ b/editor/editor_data.cpp
+@@ -1010,6 +1010,8 @@ void EditorSelection::add_node(Node *p_node) {
+ 	p_node->connect("tree_exiting", this, "_node_removed", varray(p_node), CONNECT_ONESHOT);
+ 
+ 	//emit_signal("selection_changed");
++
++	_fire_selection_changed_callback("ADD", p_node);
+ }
+ 
+ void EditorSelection::remove_node(Node *p_node) {
+@@ -1027,6 +1029,8 @@ void EditorSelection::remove_node(Node *p_node) {
+ 	selection.erase(p_node);
+ 	p_node->disconnect("tree_exiting", this, "_node_removed");
+ 	//emit_signal("selection_changed");
++
++	_fire_selection_changed_callback("REMOVE", p_node);
+ }
+ bool EditorSelection::is_selected(Node *p_node) const {
+ 
+@@ -1057,6 +1061,57 @@ Array EditorSelection::get_selected_nodes() {
+ 	return ret;
+ }
+ 
++void EditorSelection::_fire_selection_changed_callback(const String &operation, Object *p_object) {
++	if (selection_changed_callback_method_callbacks_gdscript.size() == 0)
++		return;
++
++	for (List<MethodNotifyCallbackItemGDScript>::Element *E = selection_changed_callback_method_callbacks_gdscript.front(); E; E = E->next()) {
++		E->get().object->call(E->get().method, operation, p_object);
++	}
++}
++
++Variant EditorSelection::_add_selection_changed_callback(const Variant **p_args, int p_argcount, Variant::CallError &r_error)
++{
++	if (p_argcount < 2) {
++		r_error.error = Variant::CallError::CALL_ERROR_TOO_FEW_ARGUMENTS;
++		r_error.argument = 0;
++		return Variant();
++	}
++
++	if (p_args[0]->get_type() != Variant::OBJECT) {
++		r_error.error = Variant::CallError::CALL_ERROR_INVALID_ARGUMENT;
++		r_error.argument = 0;
++		r_error.expected = Variant::OBJECT;
++		return Variant();
++	}
++
++	if (p_args[1]->get_type() != Variant::STRING) {
++		r_error.error = Variant::CallError::CALL_ERROR_INVALID_ARGUMENT;
++		r_error.argument = 1;
++		r_error.expected = Variant::STRING;
++		return Variant();
++	}
++
++	r_error.error = Variant::CallError::CALL_OK;
++
++	Object *object = *p_args[0];
++	String method = *p_args[1];
++
++	MethodNotifyCallbackItemGDScript callback;
++
++	callback.object = object;
++	callback.method = method;
++
++	selection_changed_callback_method_callbacks_gdscript.push_back(callback);
++
++	return Variant();
++}
++
++void EditorSelection::_clear_selection_changed_callback()
++{
++	selection_changed_callback_method_callbacks_gdscript.clear();
++}
++
+ void EditorSelection::_bind_methods() {
+ 
+ 	ClassDB::bind_method(D_METHOD("_node_removed"), &EditorSelection::_node_removed);
+@@ -1067,6 +1122,16 @@ void EditorSelection::_bind_methods() {
+ 	ClassDB::bind_method(D_METHOD("get_transformable_selected_nodes"), &EditorSelection::_get_transformable_selected_nodes);
+ 	ClassDB::bind_method(D_METHOD("_emit_change"), &EditorSelection::_emit_change);
+ 	ADD_SIGNAL(MethodInfo("selection_changed"));
++
++	{
++		MethodInfo mi;
++		mi.name = "add_selection_changed_callback";
++		mi.arguments.push_back(PropertyInfo(Variant::OBJECT, "object"));
++		mi.arguments.push_back(PropertyInfo(Variant::STRING, "method"));
++		ClassDB::bind_vararg_method(METHOD_FLAGS_DEFAULT, "add_selection_changed_callback", &EditorSelection::_add_selection_changed_callback, mi);
++	}
++
++	ClassDB::bind_method(D_METHOD("clear_selection_changed_callback"), &EditorSelection::_clear_selection_changed_callback);
+ }
+ 
+ void EditorSelection::add_editor_plugin(Object *p_object) {
+diff --git a/editor/editor_data.h b/editor/editor_data.h
+index 845878e07..ec932af77 100644
+--- a/editor/editor_data.h
++++ b/editor/editor_data.h
+@@ -250,6 +250,19 @@ private:
+ 	Array _get_transformable_selected_nodes();
+ 	void _emit_change();
+ 
++	Variant _add_selection_changed_callback(const Variant **p_args, int p_argcount, Variant::CallError &r_error);
++	void _clear_selection_changed_callback();
++
++	struct MethodNotifyCallbackItemGDScript {
++		Object *object;
++		String method;
++	};
++
++	List<MethodNotifyCallbackItemGDScript> selection_changed_callback_method_callbacks_gdscript;
++
++	void _fire_selection_changed_callback(const String& operation, Object *p_object);
++
++
+ protected:
+ 	static void _bind_methods();
+ 
+diff --git a/editor/editor_muse.cpp b/editor/editor_muse.cpp
+new file mode 100644
+index 000000000..a6dbcf823
+--- /dev/null
++++ b/editor/editor_muse.cpp
+@@ -0,0 +1,309 @@
++#include "editor_muse.h"
++
++#include "core/io/certs_compressed.gen.h"
++#include "core/io/compression.h"
++#include "core/io/config_file.h"
++#include "core/io/file_access_memory.h"
++#include "core/io/resource_loader.h"
++#include "core/io/resource_saver.h"
++#include "core/io/translation_loader_po.h"
++#include "core/os/dir_access.h"
++#include "core/os/file_access.h"
++#include "core/os/keyboard.h"
++#include "core/os/os.h"
++#include "core/project_settings.h"
++#include "core/version.h"
++#include "editor/editor_node.h"
++#include "editor/translations.gen.h"
++#include "scene/main/node.h"
++#include "scene/main/scene_tree.h"
++#include "scene/main/viewport.h"
++
++Ref<EditorMUSE> EditorMUSE::singleton = NULL;
++
++Map<String, Color> EditorMUSE::user_color_map;
++
++EditorMUSE::EditorMUSE() {
++}
++
++EditorMUSE::~EditorMUSE() {
++}
++
++EditorMUSE *EditorMUSE::get_singleton() {
++
++	return singleton.ptr();
++}
++
++void EditorMUSE::create() {
++
++	if (singleton.ptr())
++		return;
++
++	ClassDB::register_class<EditorMUSE>();
++
++	singleton = Ref<EditorMUSE>(memnew(EditorMUSE));
++}
++
++void EditorMUSE::destroy() {
++
++	if (!singleton.ptr())
++		return;
++
++	singleton = Ref<EditorMUSE>();
++}
++
++void EditorMUSE::_notification(int p_what) {
++
++	/*switch (p_what) {
++		case NOTIFICATION_DRAW: {
++			EditorNode *editor = EditorNode::get_singleton();
++			EditorPlugin *editorPlugin = editor->get_editor_plugin_screen();
++			EditorInterface *editorInterface = editorPlugin->get_editor_interface();
++			Control *control = editorInterface->get_editor_viewport();
++
++			Ref<Font> font = control->get_font("font", "Label");
++			control->draw_string(font, Point2(100, 100), "abcdefg", Color(1.0, 1.0, 1.0, 0.5));
++		} break;
++	}*/
++}
++
++Variant EditorMUSE::_add_update_node_property_callback(const Variant **p_args, int p_argcount, Variant::CallError &r_error) {
++
++	if (p_argcount < 2) {
++		r_error.error = Variant::CallError::CALL_ERROR_TOO_FEW_ARGUMENTS;
++		r_error.argument = 0;
++		return Variant();
++	}
++
++	if (p_args[0]->get_type() != Variant::OBJECT) {
++		r_error.error = Variant::CallError::CALL_ERROR_INVALID_ARGUMENT;
++		r_error.argument = 0;
++		r_error.expected = Variant::OBJECT;
++		return Variant();
++	}
++
++	if (p_args[1]->get_type() != Variant::STRING) {
++		r_error.error = Variant::CallError::CALL_ERROR_INVALID_ARGUMENT;
++		r_error.argument = 1;
++		r_error.expected = Variant::STRING;
++		return Variant();
++	}
++
++	r_error.error = Variant::CallError::CALL_OK;
++
++	Object *object = *p_args[0];
++	String method = *p_args[1];
++
++	MethodNotifyCallbackItemGDScript callback;
++
++	callback.object = object;
++	callback.method = method;
++
++	method_callbacks_update_node_property.push_back(callback);
++
++	return Variant();
++}
++
++void EditorMUSE::_clear_update_node_property_callbacks() {
++	method_callbacks_update_node_property.clear();
++}
++
++void EditorMUSE::_fire_update_node_property_callbacks(const Object *p_base, const String& property) {
++	for (List<MethodNotifyCallbackItemGDScript>::Element *E = method_callbacks_update_node_property.front(); E; E = E->next()) {
++		E->get().object->call(E->get().method, p_base, property);
++	}
++}
++
++Variant EditorMUSE::_add_event_callback(const Variant **p_args, int p_argcount, Variant::CallError &r_error) {
++
++	if (p_argcount < 2) {
++		r_error.error = Variant::CallError::CALL_ERROR_TOO_FEW_ARGUMENTS;
++		r_error.argument = 0;
++		return Variant();
++	}
++
++	if (p_args[0]->get_type() != Variant::OBJECT) {
++		r_error.error = Variant::CallError::CALL_ERROR_INVALID_ARGUMENT;
++		r_error.argument = 0;
++		r_error.expected = Variant::OBJECT;
++		return Variant();
++	}
++
++	if (p_args[1]->get_type() != Variant::STRING) {
++		r_error.error = Variant::CallError::CALL_ERROR_INVALID_ARGUMENT;
++		r_error.argument = 1;
++		r_error.expected = Variant::STRING;
++		return Variant();
++	}
++
++	r_error.error = Variant::CallError::CALL_OK;
++
++	Object *object = *p_args[0];
++	String method = *p_args[1];
++
++	MethodNotifyCallbackItemGDScript callback;
++
++	callback.object = object;
++	callback.method = method;
++
++	method_callbacks_event.push_back(callback);
++
++	return Variant();
++}
++
++void EditorMUSE::_clear_event_callbacks() {
++	method_callbacks_event.clear();
++}
++
++
++
++Color EditorMUSE::get_user_color(const String &p_username) {
++	if (user_color_map.has(p_username)) {
++		return user_color_map[p_username];
++	}
++
++	return Color(1.0, 0.0, 0, 0);
++}
++
++void EditorMUSE::set_user_color(const String &p_username, const Color &p_color) {
++	user_color_map[p_username] = p_color;
++
++	// Update the scene tree
++
++	EditorNode *editor = EditorNode::get_singleton();
++
++	SceneTreeDock *sceneTreeDock = editor->get_scene_tree_dock();
++	SceneTreeEditor *treeEditor = sceneTreeDock->get_tree_editor();
++
++	treeEditor->update_tree();
++}
++
++String EditorMUSE::get_current_user() {
++	return current_user;
++}
++
++void EditorMUSE::set_current_user(const String &username)
++{
++	current_user = username;
++}
++
++bool EditorMUSE::is_locked_for_current_user(const Node *p_object)
++{
++	if (p_object->get_locked_by().empty())
++		return false;
++
++	if (p_object->get_locked_by() == current_user)
++		return false;
++
++	return true;
++}
++
++void EditorMUSE::fire_update_node_property(const Node *p_node, const String &property) {
++	_fire_update_node_property_callbacks(p_node, property);
++}
++
++void EditorMUSE::update_tree() {
++	EditorNode *editor = EditorNode::get_singleton();
++	SceneTreeDock *sceneTreeDock = editor->get_scene_tree_dock();
++	SceneTreeEditor *treeEditor = sceneTreeDock->get_tree_editor();
++
++	treeEditor->update_tree();
++}
++
++void EditorMUSE::new_scene(const String &p_class, const String &p_name) {
++	EditorNode *editorNode = EditorNode::get_singleton();
++
++	editorNode->new_scene();
++
++	Node *new_node = NULL;
++
++	if (p_class == "Node2D") {
++		new_node = memnew(Node2D);
++	} else if (p_class == "Spatial") {
++		new_node = memnew(Spatial);
++	} else if (p_class == "Control") {
++		new_node = memnew(Control);
++	}
++
++	editorNode->get_editor_data().get_undo_redo().create_action(TTR("New Scene Root"));
++	editorNode->get_editor_data().get_undo_redo().add_do_method(editorNode, "set_edited_scene", new_node);
++	//editorNode->get_editor_data().get_undo_redo().add_do_method(editorNode->get_tree(), "update_tree");
++	editorNode->get_editor_data().get_undo_redo().add_do_reference(new_node);
++	editorNode->get_editor_data().get_undo_redo().add_undo_method(editorNode, "set_edited_scene", (Object *)NULL);
++	editorNode->get_editor_data().get_undo_redo().commit_action();
++
++	editorNode->edit_node(new_node);
++	//editorNode->get_editor_selection()->clear();
++	//editorNode->get_editor_selection()->add_node(new_node);
++
++	//SceneTreeDock *sceneTreeDock = editorNode->get_scene_tree_dock();
++	//SceneTreeEditor *treeEditor = sceneTreeDock->get_tree_editor();
++	//treeEditor->update_tree();
++}
++
++void EditorMUSE::free_locks(Node *p_node) {
++	List<Node *> list_open_nodes;
++
++	list_open_nodes.push_back(p_node);
++
++	while (list_open_nodes.empty() == false) {
++		Node *s = list_open_nodes.front()->get();
++		list_open_nodes.pop_front();
++
++		s->set_locked_by("");
++
++		Spatial *spatial = Object::cast_to<Spatial>(s);
++		if (spatial != NULL) {
++			spatial->update_gizmo();
++		}
++
++		for (int i = 0; i < s->get_child_count(); i++) {
++			list_open_nodes.push_back(s->get_child(i));
++		}
++	}
++
++	EditorNode *editor = EditorNode::get_singleton();
++	SceneTreeDock *sceneTreeDock = editor->get_scene_tree_dock();
++	SceneTreeEditor *treeEditor = sceneTreeDock->get_tree_editor();
++
++	treeEditor->update_tree();
++}
++
++void EditorMUSE::fire_event(const String &event, const Object *p_arg1, const Object *p_arg2) {
++	for (List<MethodNotifyCallbackItemGDScript>::Element *E = method_callbacks_event.front(); E; E = E->next()) {
++		E->get().object->call(E->get().method, event, p_arg1, p_arg2);
++	}
++}
++
++void EditorMUSE::_bind_methods() {
++	ClassDB::bind_method(D_METHOD("get_user_color", "username"), &EditorMUSE::get_user_color);
++	ClassDB::bind_method(D_METHOD("set_user_color", "username", "color"), &EditorMUSE::set_user_color);
++
++	ClassDB::bind_method(D_METHOD("get_current_user"), &EditorMUSE::get_current_user);
++	ClassDB::bind_method(D_METHOD("set_current_user", "username"), &EditorMUSE::set_current_user);
++
++	ClassDB::bind_method(D_METHOD("new_scene", "class", "name"), &EditorMUSE::new_scene);
++
++	ClassDB::bind_method(D_METHOD("update_tree"), &EditorMUSE::update_tree);
++	ClassDB::bind_method(D_METHOD("free_locks", "node"), &EditorMUSE::free_locks);
++
++	{
++		MethodInfo mi;
++		mi.name = "add_update_node_property_callback";
++		mi.arguments.push_back(PropertyInfo(Variant::OBJECT, "object"));
++		mi.arguments.push_back(PropertyInfo(Variant::STRING, "method"));
++		ClassDB::bind_vararg_method(METHOD_FLAGS_DEFAULT, "add_update_node_property_callback", &EditorMUSE::_add_update_node_property_callback, mi);
++	}
++
++	ClassDB::bind_method(D_METHOD("clear_update_node_property_callbacks"), &EditorMUSE::_clear_update_node_property_callbacks);
++
++	{
++		MethodInfo mi;
++		mi.name = "add_event_callback";
++		mi.arguments.push_back(PropertyInfo(Variant::OBJECT, "object"));
++		mi.arguments.push_back(PropertyInfo(Variant::STRING, "method"));
++		ClassDB::bind_vararg_method(METHOD_FLAGS_DEFAULT, "add_event_callback", &EditorMUSE::_add_event_callback, mi);
++	}
++
++	ClassDB::bind_method(D_METHOD("clear_event_callbacks"), &EditorMUSE::_clear_event_callbacks);
++}
+diff --git a/editor/editor_muse.h b/editor/editor_muse.h
+new file mode 100644
+index 000000000..17876446b
+--- /dev/null
++++ b/editor/editor_muse.h
+@@ -0,0 +1,76 @@
++#ifndef EDITOR_MUSE_H
++#define EDITOR_MUSE_H
++
++#include "core/object.h"
++
++#include "core/io/config_file.h"
++#include "core/os/thread_safe.h"
++#include "core/resource.h"
++#include "core/translation.h"
++#include "scene/gui/shortcut.h"
++
++class EditorPlugin;
++
++class EditorMUSE : public Resource {
++
++	GDCLASS(EditorMUSE, Resource);
++
++private:
++	_THREAD_SAFE_CLASS_
++
++	static Ref<EditorMUSE> singleton;
++
++	static Map<String, Color> user_color_map;
++
++	String current_user;
++
++	struct MethodNotifyCallbackItemGDScript {
++		Object *object;
++		String method;
++	};
++
++	List<MethodNotifyCallbackItemGDScript> method_callbacks_update_node_property;
++
++	Variant _add_update_node_property_callback(const Variant **p_args, int p_argcount, Variant::CallError &r_error);
++	void _clear_update_node_property_callbacks();
++	void _fire_update_node_property_callbacks(const Object *p_base, const String &property);
++
++	List<MethodNotifyCallbackItemGDScript> method_callbacks_event;
++
++	Variant _add_event_callback(const Variant **p_args, int p_argcount, Variant::CallError &r_error);
++	void _clear_event_callbacks();
++	void _fire_event_callbacks(const Object *p_base, const String &property);
++
++protected:
++	void _notification(int p_what);
++
++	static void _bind_methods();
++
++public:
++	static void create();
++	static void destroy();
++
++	static EditorMUSE *get_singleton();
++
++	Color get_user_color(const String &p_username);
++	void set_user_color(const String &p_username, const Color &p_color);
++
++	String get_current_user();
++	void set_current_user(const String &username);
++
++	bool is_locked_for_current_user(const Node *p_object);
++
++	void fire_update_node_property(const Node* p_node, const String& property);
++
++	void fire_event(const String &event, const Object *p_arg1, const Object *p_arg2);
++
++	void new_scene(const String &p_class, const String &p_name);
++
++	void update_tree();
++	void free_locks(Node *p_node);
++
++	EditorMUSE();
++	~EditorMUSE();
++};
++
++#endif // EDITOR_SETTINGS_H
+diff --git a/editor/editor_node.cpp b/editor/editor_node.cpp
+index d5d38732c..c445feb2c 100644
+--- a/editor/editor_node.cpp
++++ b/editor/editor_node.cpp
+@@ -53,6 +53,7 @@
+ #include "editor/editor_audio_buses.h"
+ #include "editor/editor_file_system.h"
+ #include "editor/editor_help.h"
++#include "editor/editor_muse.h"
+ #include "editor/editor_properties.h"
+ #include "editor/editor_settings.h"
+ #include "editor/editor_themes.h"
+@@ -1827,6 +1828,13 @@ void EditorNode::_run(bool p_current, const String &p_custom) {
+ 	_playing_edited = p_current;
+ }
+ 
++void EditorNode::new_scene() {
++	int idx = editor_data.add_edited_scene(-1);
++	_scene_tab_changed(idx);
++	editor_data.clear_editor_states();
++	_update_scene_tabs();
++}
++
+ void EditorNode::_menu_option_confirm(int p_option, bool p_confirmed) {
+ 
+ 	if (!p_confirmed) //this may be a hack..
+@@ -1834,12 +1842,7 @@ void EditorNode::_menu_option_confirm(int p_option, bool p_confirmed) {
+ 
+ 	switch (p_option) {
+ 		case FILE_NEW_SCENE: {
+-
+-			int idx = editor_data.add_edited_scene(-1);
+-			_scene_tab_changed(idx);
+-			editor_data.clear_editor_states();
+-			_update_scene_tabs();
+-
++			new_scene();
+ 		} break;
+ 		case FILE_NEW_INHERITED_SCENE:
+ 		case FILE_OPEN_SCENE: {
+@@ -4948,6 +4951,10 @@ EditorNode::EditorNode() {
+ 	if (!EditorSettings::get_singleton())
+ 		EditorSettings::create();
+ 
++	// load MUSE
++	if (!EditorMUSE::get_singleton())
++		EditorMUSE::create();
++
+ 	FileAccess::set_backup_save(EDITOR_GET("filesystem/on_save/safe_save_on_backup_then_rename"));
+ 
+ 	{
+@@ -6117,6 +6124,7 @@ EditorNode::~EditorNode() {
+ 	memdelete(progress_hb);
+ 
+ 	EditorSettings::destroy();
++	EditorMUSE::destroy();
+ }
+ 
+ /*
+diff --git a/editor/editor_node.h b/editor/editor_node.h
+index 267c70c77..fcadb6b1b 100644
+--- a/editor/editor_node.h
++++ b/editor/editor_node.h
+@@ -642,6 +642,7 @@ public:
+ 	static void add_editor_plugin(EditorPlugin *p_editor, bool p_config_changed = false);
+ 	static void remove_editor_plugin(EditorPlugin *p_editor, bool p_config_changed = false);
+ 
++	void new_scene();
+ 	void new_inherited_scene() { _menu_option_confirm(FILE_NEW_INHERITED_SCENE, false); }
+ 
+ 	void set_docks_visible(bool p_show);
+diff --git a/editor/editor_plugin.cpp b/editor/editor_plugin.cpp
+index 8af4ee801..d7456fe34 100644
+--- a/editor/editor_plugin.cpp
++++ b/editor/editor_plugin.cpp
+@@ -32,6 +32,7 @@
+ 
+ #include "editor/editor_node.h"
+ #include "editor/editor_settings.h"
++#include "editor/editor_muse.h"
+ #include "editor_resource_preview.h"
+ #include "main/main.h"
+ #include "plugins/canvas_item_editor_plugin.h"
+@@ -244,6 +245,10 @@ EditorInspector *EditorInterface::get_inspector() const {
+ 	return EditorNode::get_singleton()->get_inspector();
+ }
+ 
++EditorMUSE *EditorInterface::get_editor_muse() {
++	return EditorMUSE::get_singleton();
++}
++
+ Error EditorInterface::save_scene() {
+ 	if (!get_edited_scene_root())
+ 		return ERR_CANT_CREATE;
+@@ -266,6 +271,7 @@ void EditorInterface::_bind_methods() {
+ 	ClassDB::bind_method(D_METHOD("inspect_object", "object", "for_property"), &EditorInterface::inspect_object, DEFVAL(String()));
+ 	ClassDB::bind_method(D_METHOD("get_selection"), &EditorInterface::get_selection);
+ 	ClassDB::bind_method(D_METHOD("get_editor_settings"), &EditorInterface::get_editor_settings);
++	ClassDB::bind_method(D_METHOD("get_editor_muse"), &EditorInterface::get_editor_muse);
+ 	ClassDB::bind_method(D_METHOD("get_script_editor"), &EditorInterface::get_script_editor);
+ 	ClassDB::bind_method(D_METHOD("get_base_control"), &EditorInterface::get_base_control);
+ 	ClassDB::bind_method(D_METHOD("edit_resource", "resource"), &EditorInterface::edit_resource);
+diff --git a/editor/editor_plugin.h b/editor/editor_plugin.h
+index 2fcc48737..f28eda39c 100644
+--- a/editor/editor_plugin.h
++++ b/editor/editor_plugin.h
+@@ -51,6 +51,7 @@ class Camera;
+ class EditorSelection;
+ class EditorExport;
+ class EditorSettings;
++class EditorMUSE;
+ class EditorImportPlugin;
+ class EditorExportPlugin;
+ class EditorSpatialGizmoPlugin;
+@@ -97,6 +98,8 @@ public:
+ 
+ 	EditorInspector *get_inspector() const;
+ 
++	EditorMUSE *get_editor_muse();
++
+ 	Error save_scene();
+ 	void save_scene_as(const String &p_scene, bool p_with_preview = true);
+ 
+diff --git a/editor/plugins/canvas_item_editor_plugin.cpp b/editor/plugins/canvas_item_editor_plugin.cpp
+index ee3276d89..074f670c6 100644
+--- a/editor/plugins/canvas_item_editor_plugin.cpp
++++ b/editor/plugins/canvas_item_editor_plugin.cpp
+@@ -671,13 +671,17 @@ bool CanvasItemEditor::_select_click_on_item(CanvasItem *item, Point2 p_click_po
+ 			still_selected = false;
+ 		} else {
+ 			// Add the item to the selection
+-			editor_selection->add_node(item);
++			if (item->get_locked_by().empty() == true) {
++				editor_selection->add_node(item);
++			}
+ 		}
+ 	} else {
+ 		if (!editor_selection->is_selected(item)) {
+ 			// Select a new one and clear previous selection
+ 			editor_selection->clear();
+-			editor_selection->add_node(item);
++			if (item->get_locked_by().empty() == true) {
++				editor_selection->add_node(item);
++			}
+ 			// Reselect
+ 			if (Engine::get_singleton()->is_editor_hint()) {
+ 				editor->call("edit_node", item);
+@@ -2117,7 +2121,9 @@ bool CanvasItemEditor::_gui_input_select(const Ref<InputEvent> &p_event) {
+ 
+ 				_find_canvas_items_in_rect(Rect2(bsfrom, bsto - bsfrom), scene, &selitems);
+ 				for (List<CanvasItem *>::Element *E = selitems.front(); E; E = E->next()) {
+-					editor_selection->add_node(E->get());
++					if (E->get()->get_locked_by().empty() == true) {
++						editor_selection->add_node(E->get());
++					}
+ 				}
+ 			}
+ 
+@@ -2691,7 +2697,7 @@ void CanvasItemEditor::_draw_selection() {
+ 	Ref<Texture> previous_position_icon = get_icon("EditorPositionPrevious", "EditorIcons");
+ 
+ 	RID ci = viewport->get_canvas_item();
+-
++	//_get_canvas_items_at_pos
+ 	List<CanvasItem *> selection = _get_edited_canvas_items(false, false);
+ 
+ 	bool single = selection.size() == 1;
+@@ -3458,7 +3464,9 @@ void CanvasItemEditor::edit(CanvasItem *p_canvas_item) {
+ 
+ 		// Clear the selection
+ 		editor_selection->clear(); //_clear_canvas_items();
+-		editor_selection->add_node(p_canvas_item);
++		if (p_canvas_item->get_locked_by().empty() == true) {
++			editor_selection->add_node(p_canvas_item);
++		}
+ 	}
+ }
+ 
+diff --git a/editor/plugins/spatial_editor_plugin.cpp b/editor/plugins/spatial_editor_plugin.cpp
+index f48887d34..11df931eb 100644
+--- a/editor/plugins/spatial_editor_plugin.cpp
++++ b/editor/plugins/spatial_editor_plugin.cpp
+@@ -50,6 +50,8 @@
+ #include "scene/resources/packed_scene.h"
+ #include "scene/resources/surface_tool.h"
+ 
++#include "editor/editor_muse.h"
++
+ #define DISTANCE_DEFAULT 4
+ 
+ #define GIZMO_ARROW_SIZE 0.35
+@@ -286,8 +288,9 @@ void SpatialEditorViewport::_select(Node *p_node, bool p_append, bool p_single)
+ 		//erase
+ 		editor_selection->remove_node(p_node);
+ 	} else {
+-
+-		editor_selection->add_node(p_node);
++		if (p_node->get_locked_by().empty() == true) {
++			editor_selection->add_node(p_node);
++		}
+ 	}
+ 
+ 	if (p_single) {
+@@ -945,7 +948,12 @@ void SpatialEditorViewport::_sinput(const Ref<InputEvent> &p_event) {
+ 							continue;
+ 
+ 						sp->set_global_transform(se->original);
++
++						// MUSE SEND TRANSFORM_ABORT MESSAGE
++						EditorMUSE *muse = EditorMUSE::get_singleton();
++						muse->fire_update_node_property(sp, "transform");
+ 					}
++
+ 					surface->update();
+ 					set_message(TTR("Transform Aborted."), 3);
+ 				}
+@@ -1168,6 +1176,8 @@ void SpatialEditorViewport::_sinput(const Ref<InputEvent> &p_event) {
+ 
+ 							undo_redo->add_do_method(sp, "set_global_transform", sp->get_global_gizmo_transform());
+ 							undo_redo->add_undo_method(sp, "set_global_transform", se->original);
++
++							// MUSE COMMIT TRANSFORM
+ 						}
+ 						undo_redo->commit_action();
+ 						_edit.mode = TRANSFORM_NONE;
+@@ -1412,6 +1422,10 @@ void SpatialEditorViewport::_sinput(const Ref<InputEvent> &p_event) {
+ 								// Apply scale
+ 								sp->set_global_transform(t);
+ 							}
++
++							// MUSE SEND INTERMEDIATE TRANSFORM
++							EditorMUSE *muse = EditorMUSE::get_singleton();
++							muse->fire_update_node_property(sp, "transform");
+ 						}
+ 
+ 						surface->update();
+@@ -1526,6 +1540,10 @@ void SpatialEditorViewport::_sinput(const Ref<InputEvent> &p_event) {
+ 							t = original;
+ 							t.origin += motion;
+ 							sp->set_global_transform(t);
++
++							// MUSE SEND INTERMEDIATE TRANSFORM
++							EditorMUSE *muse = EditorMUSE::get_singleton();
++							muse->fire_update_node_property(sp, "transform");
+ 						}
+ 
+ 						surface->update();
+@@ -1632,6 +1650,10 @@ void SpatialEditorViewport::_sinput(const Ref<InputEvent> &p_event) {
+ 								// Apply rotation
+ 								sp->set_global_transform(t);
+ 							}
++
++							// MUSE SEND INTERMEDIATE TRANSFORM
++							EditorMUSE *muse = EditorMUSE::get_singleton();
++							muse->fire_update_node_property(sp, "transform");
+ 						}
+ 
+ 						surface->update();
+@@ -5331,6 +5353,9 @@ void SpatialEditor::_register_all_gizmos() {
+ 	add_gizmo_plugin(Ref<NavigationMeshSpatialGizmoPlugin>(memnew(NavigationMeshSpatialGizmoPlugin)));
+ 	add_gizmo_plugin(Ref<JointSpatialGizmoPlugin>(memnew(JointSpatialGizmoPlugin)));
+ 	add_gizmo_plugin(Ref<PhysicalBoneSpatialGizmoPlugin>(memnew(PhysicalBoneSpatialGizmoPlugin)));
++
++	//add_gizmo_plugin(Ref<MUSERemoteUserViewSpatialGizmoPlugin>(memnew(MUSERemoteUserViewSpatialGizmoPlugin)));
++	add_gizmo_plugin(Ref<MUSERemoteSelectionHighlightSpatialGizmoPlugin>(memnew(MUSERemoteSelectionHighlightSpatialGizmoPlugin)));
+ }
+ 
+ void SpatialEditor::_bind_methods() {
+diff --git a/editor/plugins/spatial_editor_plugin.h b/editor/plugins/spatial_editor_plugin.h
+index 4a9d34a7f..238ad1926 100644
+--- a/editor/plugins/spatial_editor_plugin.h
++++ b/editor/plugins/spatial_editor_plugin.h
+@@ -670,6 +670,7 @@ public:
+ 	Transform get_gizmo_transform() const { return gizmo.transform; }
+ 	bool is_gizmo_visible() const { return gizmo.visible; }
+ 
++
+ 	ToolMode get_tool_mode() const { return tool_mode; }
+ 	bool are_local_coords_enabled() const { return tool_option_button[SpatialEditor::TOOL_OPT_LOCAL_COORDS]->is_pressed(); }
+ 	bool is_snap_enabled() const { return snap_enabled ^ snap_key_enabled; }
+diff --git a/editor/scene_tree_dock.cpp b/editor/scene_tree_dock.cpp
+index db7bfdd30..f556508de 100644
+--- a/editor/scene_tree_dock.cpp
++++ b/editor/scene_tree_dock.cpp
+@@ -45,6 +45,8 @@
+ #include "scene/main/viewport.h"
+ #include "scene/resources/packed_scene.h"
+ 
++#include "editor/editor_muse.h"
++
+ void SceneTreeDock::_nodes_drag_begin() {
+ 
+ 	if (restore_script_editor_on_drag) {
+@@ -863,7 +865,10 @@ void SceneTreeDock::_tool_selected(int p_tool, bool p_confirm_override) {
+ 
+ 			editor->edit_node(new_node);
+ 			editor_selection->clear();
+-			editor_selection->add_node(new_node);
++
++			if (EditorMUSE::get_singleton()->is_locked_for_current_user(new_node)) {
++				editor_selection->add_node(new_node);
++			}
+ 
+ 		} break;
+ 
+@@ -1467,6 +1472,10 @@ void SceneTreeDock::_do_reparent(Node *p_new_parent, int p_position_in_parent, V
+ 		editor_data->get_undo_redo().add_undo_method(new_parent, "remove_child", node);
+ 		editor_data->get_undo_redo().add_undo_method(node, "set_name", former_names[ni]);
+ 
++		// ...
++		EditorMUSE *muse = EditorMUSE::get_singleton();
++		muse->fire_event("reparent", node, new_parent);
++
+ 		inc++;
+ 	}
+ 
+@@ -1731,7 +1740,9 @@ void SceneTreeDock::_create() {
+ 		editor_data->get_undo_redo().commit_action();
+ 		editor->push_item(c);
+ 		editor_selection->clear();
+-		editor_selection->add_node(child);
++		if (EditorMUSE::get_singleton()->is_locked_for_current_user(child)) {
++			editor_selection->add_node(child);
++		}
+ 		if (Object::cast_to<Control>(c)) {
+ 			//make editor more comfortable, so some controls don't appear super shrunk
+ 			Control *ct = Object::cast_to<Control>(c);
+diff --git a/editor/scene_tree_editor.cpp b/editor/scene_tree_editor.cpp
+index c023c4174..adb7cde3d 100644
+--- a/editor/scene_tree_editor.cpp
++++ b/editor/scene_tree_editor.cpp
+@@ -39,6 +39,8 @@
+ #include "scene/main/viewport.h"
+ #include "scene/resources/packed_scene.h"
+ 
++#include "editor/editor_muse.h"
++
+ Node *SceneTreeEditor::get_scene_node() {
+ 
+ 	ERR_FAIL_COND_V(!is_inside_tree(), NULL);
+@@ -168,6 +170,24 @@ bool SceneTreeEditor::_add_nodes(Node *p_node, TreeItem *p_parent) {
+ 	TreeItem *item = tree->create_item(p_parent);
+ 
+ 	item->set_text(0, p_node->get_name());
++
++	// set color
++
++	// p_node->set_locked_by("Peter");
++
++	if (p_node->get_locked_by().empty() == false) {
++		item->set_suffix(0, "[" + p_node->get_locked_by() + "]");
++
++		EditorMUSE* muse = EditorMUSE::get_singleton();
++
++		if (muse != 0) {
++			Color color = muse->get_user_color(p_node->get_locked_by());
++
++			item->set_custom_bg_color(0, color);
++			item->add_button(0, get_icon("Lock", "EditorIcons"), BUTTON_MUSE_LOCK, false, TTR("Node is locked."));
++		}
++	}
++
+ 	if (can_rename && !part_of_subscene /*(p_node->get_owner() == get_scene_node() || p_node==get_scene_node())*/)
+ 		item->set_editable(0, true);
+ 
+@@ -539,7 +559,9 @@ void SceneTreeEditor::_cell_multi_selected(Object *p_object, int p_cell, bool p_
+ 		return;
+ 
+ 	if (p_selected) {
+-		editor_selection->add_node(n);
++		if (EditorMUSE::get_singleton()->is_locked_for_current_user(n) == false) {
++			editor_selection->add_node(n);
++		}
+ 
+ 	} else {
+ 		editor_selection->remove_node(n);
+diff --git a/editor/scene_tree_editor.h b/editor/scene_tree_editor.h
+index aa4d4dd58..fc00c9c87 100644
+--- a/editor/scene_tree_editor.h
++++ b/editor/scene_tree_editor.h
+@@ -56,6 +56,7 @@ class SceneTreeEditor : public Control {
+ 		BUTTON_SIGNALS = 6,
+ 		BUTTON_GROUPS = 7,
+ 		BUTTON_PIN = 8,
++		BUTTON_MUSE_LOCK = 9,
+ 	};
+ 
+ 	Tree *tree;
+diff --git a/editor/spatial_editor_gizmos.cpp b/editor/spatial_editor_gizmos.cpp
+index 2e06a903a..835060f45 100644
+--- a/editor/spatial_editor_gizmos.cpp
++++ b/editor/spatial_editor_gizmos.cpp
+@@ -64,6 +64,8 @@
+ #include "scene/resources/sphere_shape.h"
+ #include "scene/resources/surface_tool.h"
+ 
++#include "editor/editor_muse.h"
++
+ #define HANDLE_HALF_SIZE 9.5
+ 
+ bool EditorSpatialGizmo::is_editable() const {
+@@ -1193,6 +1195,192 @@ void AudioStreamPlayer3DSpatialGizmoPlugin::redraw(EditorSpatialGizmo *p_gizmo)
+ 
+ //////
+ 
++MUSERemoteUserViewSpatialGizmoPlugin::MUSERemoteUserViewSpatialGizmoPlugin() {
++
++	Color gizmo_color = EDITOR_DEF("editors/3d_gizmos/gizmo_colors/camera", Color(1.0, 0.4, 0.8));
++
++	create_material("camera_material", gizmo_color);
++	create_icon_material("camera_icon", SpatialEditor::get_singleton()->get_icon("GizmoCamera", "EditorIcons"));
++	create_handle_material("handles");
++}
++
++bool MUSERemoteUserViewSpatialGizmoPlugin::has_gizmo(Spatial *p_spatial) {
++	return Object::cast_to<Spatial>(p_spatial) != NULL;
++}
++
++String MUSERemoteUserViewSpatialGizmoPlugin::get_name() const {
++	return "MUSERemoteUserView";
++}
++
++int MUSERemoteUserViewSpatialGizmoPlugin::get_priority() const {
++	return -4;
++}
++
++String MUSERemoteUserViewSpatialGizmoPlugin::get_handle_name(const EditorSpatialGizmo *p_gizmo, int p_idx) const {
++
++	return "Test";
++}
++
++Variant MUSERemoteUserViewSpatialGizmoPlugin::get_handle_value(EditorSpatialGizmo *p_gizmo, int p_idx) const {
++
++	return p_gizmo->get_spatial_node()->get_name();
++}
++
++void MUSERemoteUserViewSpatialGizmoPlugin::set_handle(EditorSpatialGizmo *p_gizmo, int p_idx, Camera *p_camera, const Point2 &p_point) {
++}
++
++void MUSERemoteUserViewSpatialGizmoPlugin::commit_handle(EditorSpatialGizmo *p_gizmo, int p_idx, const Variant &p_restore, bool p_cancel) {
++}
++
++void MUSERemoteUserViewSpatialGizmoPlugin::redraw(EditorSpatialGizmo *p_gizmo) {
++
++	//Camera *camera = Object::cast_to<Camera>(p_gizmo->get_spatial_node());
++	MeshInstance *mesh = Object::cast_to<MeshInstance>(p_gizmo->get_spatial_node());
++
++	p_gizmo->clear();
++
++	Vector<Vector3> lines;
++	Vector<Vector3> handles;
++
++	Ref<Material> material = get_material("camera_material", p_gizmo);
++	Ref<Material> icon = get_material("camera_icon", p_gizmo);
++
++	// The real FOV is halved for accurate representation
++	float fov = 45 / 2.0;
++
++	Vector3 side = Vector3(Math::sin(Math::deg2rad(fov)), 0, -Math::cos(Math::deg2rad(fov)));
++	Vector3 nside = side;
++	nside.x = -nside.x;
++	Vector3 up = Vector3(0, side.x, 0);
++
++#define ADD_TRIANGLE(m_a, m_b, m_c) \
++	{                               \
++		lines.push_back(m_a);       \
++		lines.push_back(m_b);       \
++		lines.push_back(m_b);       \
++		lines.push_back(m_c);       \
++		lines.push_back(m_c);       \
++		lines.push_back(m_a);       \
++	}
++
++	ADD_TRIANGLE(Vector3(), side + up, side - up);
++	ADD_TRIANGLE(Vector3(), nside + up, nside - up);
++	ADD_TRIANGLE(Vector3(), side + up, nside + up);
++	ADD_TRIANGLE(Vector3(), side - up, nside - up);
++
++	handles.push_back(side);
++	side.x *= 0.25;
++	nside.x *= 0.25;
++	Vector3 tup(0, up.y * 3 / 2, side.z);
++	ADD_TRIANGLE(tup, side + up, nside + up);
++
++	p_gizmo->add_lines(lines, material);
++	p_gizmo->add_unscaled_billboard(icon, 0.05);
++	p_gizmo->add_handles(handles, get_material("handles"));
++}
++
++//////
++
++MUSERemoteSelectionHighlightSpatialGizmoPlugin::MUSERemoteSelectionHighlightSpatialGizmoPlugin() {
++}
++
++bool MUSERemoteSelectionHighlightSpatialGizmoPlugin::has_gizmo(Spatial *p_spatial) {
++	return Object::cast_to<Spatial>(p_spatial) != NULL;
++}
++
++String MUSERemoteSelectionHighlightSpatialGizmoPlugin::get_name() const {
++	return "MUSERemoteSelectionHighlightSpatialGizmoPlugin";
++}
++
++int MUSERemoteSelectionHighlightSpatialGizmoPlugin::get_priority() const {
++	return -5;
++}
++
++String MUSERemoteSelectionHighlightSpatialGizmoPlugin::get_handle_name(const EditorSpatialGizmo *p_gizmo, int p_idx) const {
++
++	return "Test";
++}
++
++Variant MUSERemoteSelectionHighlightSpatialGizmoPlugin::get_handle_value(EditorSpatialGizmo *p_gizmo, int p_idx) const {
++
++	return p_gizmo->get_spatial_node()->get_name();
++}
++
++void MUSERemoteSelectionHighlightSpatialGizmoPlugin::set_handle(EditorSpatialGizmo *p_gizmo, int p_idx, Camera *p_camera, const Point2 &p_point) {
++}
++
++void MUSERemoteSelectionHighlightSpatialGizmoPlugin::commit_handle(EditorSpatialGizmo *p_gizmo, int p_idx, const Variant &p_restore, bool p_cancel) {
++}
++
++void MUSERemoteSelectionHighlightSpatialGizmoPlugin::redraw(EditorSpatialGizmo *p_gizmo) {
++	Spatial *spatial = p_gizmo->get_spatial_node();
++	MeshInstance *meshInstance = Object::cast_to<MeshInstance>(spatial);
++	List<MeshInstance *> meshes;
++	bool checkSingleLockBy = false;
++
++	if (meshInstance != NULL) {
++		meshes.push_back(meshInstance);
++	} else if (spatial->get_owner() != NULL && !spatial->get_filename().empty()) {
++		checkSingleLockBy = true;
++
++		List<Node *> open_queue;
++
++		open_queue.push_back(spatial);
++
++		while (open_queue.empty() == false) {
++			Node *s = open_queue.front()->get();
++			open_queue.pop_front();
++
++			if (s->get_class() == "MeshInstance") {
++				MeshInstance *mi = Object::cast_to<MeshInstance>(s);
++				meshes.push_back(mi);
++			}
++
++			for (int i = 0; i < s->get_child_count(); i++) {
++				open_queue.push_back(s->get_child(i));
++			}
++		}
++	}
++
++	p_gizmo->clear();
++
++	EditorMUSE *muse = EditorMUSE::get_singleton();
++
++	for (List<MeshInstance *>::Element *E = meshes.front(); E; E = E->next()) {
++		MeshInstance *mesh = E->get();
++
++		Ref<Mesh> m = mesh->get_mesh();
++
++		if (!m.is_valid())
++			continue;
++
++		String lockby = mesh->get_locked_by();
++
++		if (checkSingleLockBy) {
++			lockby = spatial->get_locked_by();
++		}
++
++		if (lockby.empty())
++			continue;
++
++		Ref<Material> material = get_material(lockby, p_gizmo);
++
++		if (!material.is_valid()) {
++			Color color = muse->get_user_color(lockby);
++
++			color.a = 0.6f;
++
++			create_material(lockby, color);
++		}
++
++		material = get_material(lockby, p_gizmo);
++
++		p_gizmo->add_mesh(m, false, RID(), material);
++	}
++}
++
++//////
++
+ CameraSpatialGizmoPlugin::CameraSpatialGizmoPlugin() {
+ 
+ 	Color gizmo_color = EDITOR_DEF("editors/3d_gizmos/gizmo_colors/camera", Color(0.8, 0.4, 0.8));
+diff --git a/editor/spatial_editor_gizmos.h b/editor/spatial_editor_gizmos.h
+index 3661df4ba..3803a66dc 100644
+--- a/editor/spatial_editor_gizmos.h
++++ b/editor/spatial_editor_gizmos.h
+@@ -72,6 +72,42 @@ public:
+ 	AudioStreamPlayer3DSpatialGizmoPlugin();
+ };
+ 
++class MUSERemoteUserViewSpatialGizmoPlugin : public EditorSpatialGizmoPlugin {
++
++	GDCLASS(MUSERemoteUserViewSpatialGizmoPlugin, EditorSpatialGizmoPlugin);
++
++public:
++	bool has_gizmo(Spatial *p_spatial);
++	String get_name() const;
++	int get_priority() const;
++
++	String get_handle_name(const EditorSpatialGizmo *p_gizmo, int p_idx) const;
++	Variant get_handle_value(EditorSpatialGizmo *p_gizmo, int p_idx) const;
++	void set_handle(EditorSpatialGizmo *p_gizmo, int p_idx, Camera *p_camera, const Point2 &p_point);
++	void commit_handle(EditorSpatialGizmo *p_gizmo, int p_idx, const Variant &p_restore, bool p_cancel = false);
++	void redraw(EditorSpatialGizmo *p_gizmo);
++
++	MUSERemoteUserViewSpatialGizmoPlugin();
++};
++
++class MUSERemoteSelectionHighlightSpatialGizmoPlugin : public EditorSpatialGizmoPlugin {
++
++	GDCLASS(MUSERemoteSelectionHighlightSpatialGizmoPlugin, EditorSpatialGizmoPlugin);
++
++public:
++	bool has_gizmo(Spatial *p_spatial);
++	String get_name() const;
++	int get_priority() const;
++
++	String get_handle_name(const EditorSpatialGizmo *p_gizmo, int p_idx) const;
++	Variant get_handle_value(EditorSpatialGizmo *p_gizmo, int p_idx) const;
++	void set_handle(EditorSpatialGizmo *p_gizmo, int p_idx, Camera *p_camera, const Point2 &p_point);
++	void commit_handle(EditorSpatialGizmo *p_gizmo, int p_idx, const Variant &p_restore, bool p_cancel = false);
++	void redraw(EditorSpatialGizmo *p_gizmo);
++
++	MUSERemoteSelectionHighlightSpatialGizmoPlugin();
++};
++
+ class CameraSpatialGizmoPlugin : public EditorSpatialGizmoPlugin {
+ 
+ 	GDCLASS(CameraSpatialGizmoPlugin, EditorSpatialGizmoPlugin);
+diff --git a/modules/websocket/websocket_client.cpp b/modules/websocket/websocket_client.cpp
+index 4ff5404c6..f9552900a 100644
+--- a/modules/websocket/websocket_client.cpp
++++ b/modules/websocket/websocket_client.cpp
+@@ -131,11 +131,16 @@ void WebSocketClient::_on_error() {
+ 	}
+ }
+ 
++Ref<WebSocketPeer> WebSocketClient::get_my_peer() {
++	return _peer;
++}
++
+ void WebSocketClient::_bind_methods() {
+ 	ClassDB::bind_method(D_METHOD("connect_to_url", "url", "protocols", "gd_mp_api"), &WebSocketClient::connect_to_url, DEFVAL(PoolVector<String>()), DEFVAL(false));
+ 	ClassDB::bind_method(D_METHOD("disconnect_from_host", "code", "reason"), &WebSocketClient::disconnect_from_host, DEFVAL(1000), DEFVAL(""));
+ 	ClassDB::bind_method(D_METHOD("set_verify_ssl_enabled", "enabled"), &WebSocketClient::set_verify_ssl_enabled);
+ 	ClassDB::bind_method(D_METHOD("is_verify_ssl_enabled"), &WebSocketClient::is_verify_ssl_enabled);
++	ClassDB::bind_method(D_METHOD("get_my_peer"), &WebSocketClient::get_my_peer);
+ 
+ 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "verify_ssl", PROPERTY_HINT_NONE, "", 0), "set_verify_ssl_enabled", "is_verify_ssl_enabled");
+ 
+diff --git a/modules/websocket/websocket_client.h b/modules/websocket/websocket_client.h
+index c464d97c7..3ac5e3438 100644
+--- a/modules/websocket/websocket_client.h
++++ b/modules/websocket/websocket_client.h
+@@ -52,6 +52,8 @@ public:
+ 	void set_verify_ssl_enabled(bool p_verify_ssl);
+ 	bool is_verify_ssl_enabled() const;
+ 
++	Ref<WebSocketPeer> get_my_peer();
++
+ 	virtual void poll() = 0;
+ 	virtual Error connect_to_host(String p_host, String p_path, uint16_t p_port, bool p_ssl, PoolVector<String> p_protocol = PoolVector<String>()) = 0;
+ 	virtual void disconnect_from_host(int p_code = 1000, String p_reason = "") = 0;
+diff --git a/scene/2d/canvas_item.cpp b/scene/2d/canvas_item.cpp
+index 2739f7154..f4785a26b 100644
+--- a/scene/2d/canvas_item.cpp
++++ b/scene/2d/canvas_item.cpp
+@@ -41,6 +41,9 @@
+ #include "servers/visual/visual_server_raster.h"
+ #include "servers/visual_server.h"
+ 
++#include "editor/editor_node.h"
++#include "editor/editor_muse.h"
++
+ Mutex *CanvasItemMaterial::material_mutex = NULL;
+ SelfList<CanvasItemMaterial>::List *CanvasItemMaterial::dirty_materials = NULL;
+ Map<CanvasItemMaterial::MaterialKey, CanvasItemMaterial::ShaderData> CanvasItemMaterial::shader_map;
+@@ -603,7 +606,27 @@ void CanvasItem::_notification(int p_what) {
+ 			global_invalid = true;
+ 		} break;
+ 		case NOTIFICATION_DRAW: {
+-
++			if (get_locked_by().empty() == false) {
++				EditorNode *editor = EditorNode::get_singleton();
++				if (editor != 0) {
++					EditorPlugin *editorPlugin = editor->get_editor_plugin_screen();
++
++					if (editorPlugin != 0) {
++						EditorInterface *editorInterface = editorPlugin->get_editor_interface();
++
++						if (editorInterface != 0) {
++							Control *control = editorInterface->get_editor_viewport();
++
++							if (control != 0) {
++								
++
++								Ref<Font> font = control->get_font("font", "Label");
++								draw_string(font, Point2(100, 100), get_locked_by(), Color(1.0, 1.0, 1.0, 0.5));
++							}
++						}
++					}
++				}
++			}
+ 		} break;
+ 		case NOTIFICATION_TRANSFORM_CHANGED: {
+ 
+diff --git a/scene/2d/sprite.cpp b/scene/2d/sprite.cpp
+index a8c762282..f8159f381 100644
+--- a/scene/2d/sprite.cpp
++++ b/scene/2d/sprite.cpp
+@@ -34,6 +34,10 @@
+ #include "scene/main/viewport.h"
+ #include "scene/scene_string_names.h"
+ 
++#ifdef TOOLS_ENABLED
++	#include "editor/editor_muse.h"
++#endif
++
+ Dictionary Sprite::_edit_get_state() const {
+ 	Dictionary state = Node2D::_edit_get_state();
+ 	state["offset"] = offset;
+@@ -123,10 +127,22 @@ void Sprite::_notification(int p_what) {
+ 			break;
+ 			*/
+ 
++			Color color = Color(1, 1, 1);
++
++#ifdef TOOLS_ENABLED
++			if (get_locked_by().empty() == false) {
++				EditorMUSE *muse = EditorMUSE::get_singleton();
++
++				if (muse != 0) {
++					color = muse->get_user_color(get_locked_by());
++				}
++			}
++#endif
++
+ 			Rect2 src_rect, dst_rect;
+ 			bool filter_clip;
+ 			_get_rects(src_rect, dst_rect, filter_clip);
+-			texture->draw_rect_region(ci, dst_rect, src_rect, Color(1, 1, 1), false, normal_map, filter_clip);
++			texture->draw_rect_region(ci, dst_rect, src_rect, color, false, normal_map, filter_clip);
+ 
+ 		} break;
+ 	}
+diff --git a/scene/main/node.cpp b/scene/main/node.cpp
+index 93c5140a8..3e26fa367 100644
+--- a/scene/main/node.cpp
++++ b/scene/main/node.cpp
+@@ -904,6 +904,31 @@ StringName Node::get_name() const {
+ 	return data.name;
+ }
+ 
++#ifdef TOOLS_ENABLED
++
++int Node::get_state_version() const {
++
++	return data.state_version;
++}
++
++void Node::set_state_version(const int value) {
++
++	data.state_version = value;
++}
++
++String Node::get_locked_by() const {
++
++	return data.locked_by;
++}
++
++void Node::set_locked_by(const String &p_value) {
++
++	data.locked_by = p_value;
++}
++
++#endif
++
++
+ void Node::_set_name_nocheck(const StringName &p_name) {
+ 
+ 	data.name = p_name;
+@@ -2862,6 +2887,13 @@ void Node::_bind_methods() {
+ 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "multiplayer", PROPERTY_HINT_RESOURCE_TYPE, "MultiplayerAPI", 0), "", "get_multiplayer");
+ 	ADD_PROPERTY(PropertyInfo(Variant::OBJECT, "custom_multiplayer", PROPERTY_HINT_RESOURCE_TYPE, "MultiplayerAPI", 0), "set_custom_multiplayer", "get_custom_multiplayer");
+ 
++#ifdef TOOLS_ENABLED
++	ClassDB::bind_method(D_METHOD("set_locked_by", "locked_by"), &Node::set_locked_by);
++	ClassDB::bind_method(D_METHOD("get_locked_by"), &Node::get_locked_by);
++
++	ADD_PROPERTY(PropertyInfo(Variant::STRING, "locked_by", PROPERTY_HINT_NONE, "", 0), "set_locked_by", "get_locked_by");
++#endif
++
+ 	BIND_VMETHOD(MethodInfo("_process", PropertyInfo(Variant::REAL, "delta")));
+ 	BIND_VMETHOD(MethodInfo("_physics_process", PropertyInfo(Variant::REAL, "delta")));
+ 	BIND_VMETHOD(MethodInfo("_enter_tree"));
+diff --git a/scene/main/node.h b/scene/main/node.h
+index e6189389c..25c1c8657 100644
+--- a/scene/main/node.h
++++ b/scene/main/node.h
+@@ -98,6 +98,15 @@ private:
+ 		int depth;
+ 		int blocked; // safeguard that throws an error when attempting to modify the tree in a harmful way while being traversed.
+ 		StringName name;
++
++#ifdef TOOLS_ENABLED
++		// The version of the internal state.
++		int state_version;
++
++		// This stores the username of the user who locked this node for exclusive editing.
++		String locked_by;
++#endif
++
+ 		SceneTree *tree;
+ 		bool inside_tree;
+ 		bool ready_notified; //this is a small hack, so if a node is added during _ready() to the tree, it correctly gets the _ready() notification
+@@ -243,6 +252,14 @@ public:
+ 	StringName get_name() const;
+ 	void set_name(const String &p_name);
+ 
++#ifdef TOOLS_ENABLED
++	int get_state_version() const;
++	void set_state_version(const int value);
++
++	String get_locked_by() const;
++	void set_locked_by(const String &p_value);
++#endif
++
+ 	void add_child(Node *p_child, bool p_legible_unique_name = false);
+ 	void add_child_below_node(Node *p_node, Node *p_child, bool p_legible_unique_name = false);
+ 	void remove_child(Node *p_child);
+-- 
+2.20.1.windows.1
+
